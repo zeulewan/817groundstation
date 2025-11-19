@@ -1,3 +1,5 @@
+/* static/style.css */
+
 :root {
   --bg:#111827;
   --surface:#111827;
@@ -41,8 +43,8 @@ header {
   display:grid;
   grid-template-columns:320px 2.1fr 400px;
   height:calc(100vh - 56px);
-  column-gap:16px;           /* <-- add space between the three main columns */
-  padding:8px 12px 12px;     /* <-- small inner padding so outer lines don't kiss the edge */
+  column-gap:16px;           /* space between the three main columns */
+  padding:8px 12px 12px;     /* inner padding */
 }
 
 iframe {
@@ -61,7 +63,7 @@ iframe {
   padding:8px 8px 8px 0;
   display:flex;
   flex-direction:column;
-  gap:12px;                  /* was 8px */
+  gap:12px;
   overflow-y:auto;
 }
 
@@ -81,7 +83,7 @@ iframe {
   text-transform:uppercase;
   letter-spacing:1.5px;
   color:var(--text-muted);
-  margin-bottom:8px;         /* a bit more space below titles */
+  margin-bottom:8px;
 }
 
 .value {
@@ -155,7 +157,7 @@ button#logBtn.recording {
 .sys-row {
   font-size:12px;
   color:var(--text-muted);
-  line-height:1.5;           /* slightly taller to stop text touching borders */
+  line-height:1.5;
   margin-bottom:2px;
 }
 
@@ -176,7 +178,7 @@ button#logBtn.recording {
 .center-column {
   display:flex;
   flex-direction:column;
-  gap:12px;                  /* was 8px */
+  gap:12px;
   padding:8px 0 8px 0;
   overflow:hidden;
 }
@@ -198,7 +200,7 @@ button#logBtn.recording {
 .log-container {
   border:1px solid var(--border);
   background:#111827;
-  margin-top:8px;            /* was 4px */
+  margin-top:8px;
   height:100%;
   display:flex;
   flex-direction:column;
@@ -249,11 +251,11 @@ button#logBtn.recording {
 /* RIGHT COLUMN: DATA */
 
 .data-column {
-  border-left:1px solid var(--border);
-  padding:8px 0 8px 0;
+  /* remove border-left so we don't get overlapping vertical lines */
+  padding:8px 0 8px 4px;     /* slight left padding to offset cards from grid edge */
   display:flex;
   flex-direction:column;
-  gap:12px;                  /* was 8px */
+  gap:12px;
   overflow-y:hidden;
 }
 
@@ -265,7 +267,7 @@ button#logBtn.recording {
   height:6px;
   background:#111827;
   border:1px solid var(--border);
-  margin-top:6px;            /* a little more above the bar */
+  margin-top:6px;
 }
 
 .battery-fill {
@@ -287,8 +289,8 @@ button#logBtn.recording {
 .compact-grid {
   display:grid;
   grid-template-columns:1fr 1fr;
-  column-gap:16px;           /* more horizontal space */
-  row-gap:6px;               /* more vertical space between env rows */
+  column-gap:16px;
+  row-gap:6px;
   font-size:12px;
   color:var(--text-muted);
 }
@@ -307,5 +309,5 @@ canvas {
   height:50px;
   display:block;
   background:#111827;
-  margin-top:4px;            /* space between number and sparkline */
+  margin-top:4px;
 }

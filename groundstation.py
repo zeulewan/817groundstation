@@ -28,6 +28,9 @@ VBAT_MIN_DEFAULT = 2950  # mV, from lifepo4wered-cli get VBAT_MIN
 VBAT_MAX_DEFAULT = 3500  # mV, "full" voltage
 _vbat_min_cached = None
 
+# ---------- GAS / AQI BASELINE ----------
+_gas_baseline = None  # first reading becomes baseline for AQI
+
 
 def parse_first_int(out):
     m = re.search(r"(-?\d+)", out)
@@ -110,6 +113,82 @@ def compute_dew_point_c(temp_c, rh):
     return dew
 
 
+def compute_fire_risk_index(temp_c, rh, dew_point_c):
+    """
+    Very simple heuristic fire risk index 0–100 based on:
+      - relative humidity (drier => higher risk)
+      - temperature (warmer => higher risk)
+      - temp - dew point spread (bigger spread => drier air)
+    Returns (index, level_string).
+    """
+    if temp_c is None or rh is None:
+        return None, None
+
+    # Normalize temp: 0 at 5°C, 1 at 35°C
+    t_norm = (temp_c - 5.0) / (35.0 - 5.0)
+    t_norm = max(0.0, min(1.0, t_norm))
+
+    # Dryness from humidity: 0 at 100%, 1 at 0%
+    rh_norm = 1.0 - max(0.0, min(1.0, rh / 100.0))
+
+    # Dew spread: bigger difference means drier.
+    if dew_point_c is not None:
+        dew_spread = max(0.0, temp_c - dew_point_c)
+    else:
+        dew_spread = 0.0
+    dew_norm = max(0.0, min(1.0, dew_spread / 15.0))  # 15°C spread => 1.0
+
+    score = (0.5 * rh_norm + 0.3 * t_norm + 0.2 * dew_norm) * 100.0
+    score = max(0.0, min(100.0, score))
+
+    if score < 20:
+        level = "Low"
+    elif score < 40:
+        level = "Moderate"
+    elif score < 60:
+        level = "High"
+    elif score < 80:
+        level = "Very High"
+    else:
+        level = "Extreme"
+
+    return score, level
+
+
+def compute_air_quality_index(gas_ohms):
+    """
+    Very simple relative AQI (0–250-ish) using BME680 gas resistance.
+    We treat the first reading as the 'baseline' clean air, and compute
+    how far the current reading deviates (lower gas => poorer air).
+    Returns (aqi_index, level_string).
+    """
+    global _gas_baseline
+    if gas_ohms is None or gas_ohms <= 0:
+        return None, None
+
+    if _gas_baseline is None:
+        _gas_baseline = gas_ohms
+        return 50, "Good"
+
+    ratio = _gas_baseline / gas_ohms  # >1 => more VOCs (worse)
+    # Clamp ratio-1 into [-1, 4] then map into AQI ~0–250
+    delta = max(-1.0, min(4.0, ratio - 1.0))
+    aqi = int(round(50 + delta * 50))  # baseline ~50
+
+    if aqi <= 50:
+        level = "Good"
+    elif aqi <= 100:
+        level = "Moderate"
+    elif aqi <= 150:
+        level = "Unhealthy-SG"
+    elif aqi <= 200:
+        level = "Unhealthy"
+    else:
+        level = "Very Unhealthy"
+
+    return aqi, level
+
+
 def get_bme_readings():
     temperature_c = float(bme.temperature)
     humidity = float(bme.humidity)
@@ -122,6 +201,10 @@ def get_bme_readings():
         altitude_m = None
 
     dew_point_c = compute_dew_point_c(temperature_c, humidity)
+    fire_risk_index, fire_risk_level = compute_fire_risk_index(
+        temperature_c, humidity, dew_point_c
+    )
+    air_quality_index, air_quality_level = compute_air_quality_index(gas_ohms)
 
     return {
         "temperature_c": temperature_c,
@@ -130,6 +213,10 @@ def get_bme_readings():
         "gas_ohms": gas_ohms,
         "dew_point_c": dew_point_c,
         "altitude_m": altitude_m,
+        "fire_risk_index": fire_risk_index,
+        "fire_risk_level": fire_risk_level,
+        "air_quality_index": air_quality_index,
+        "air_quality_level": air_quality_level,
     }
 
 # ---------- SYSTEM STATS (GROUND STATION) ----------
@@ -322,6 +409,8 @@ INDEX_HTML = """<!doctype html>
           <div>Gas<span id="gas">--</span><span class="unit">Ω</span></div>
           <div>Dew Pt<span id="dew">--</span><span class="unit">°C</span></div>
           <div>Altitude<span id="alt">--</span><span class="unit">m</span></div>
+          <div>Fire Risk<span id="fire-risk">--</span></div>
+          <div>Air Quality<span id="aqi">--</span></div>
         </div>
       </div>
 
@@ -525,6 +614,20 @@ INDEX_HTML = """<!doctype html>
           document.getElementById('alt').textContent = '--';
         }
 
+        if (d.fire_risk_index != null) {
+          document.getElementById('fire-risk').textContent =
+            d.fire_risk_index.toFixed(0) + ' (' + d.fire_risk_level + ')';
+        } else {
+          document.getElementById('fire-risk').textContent = '--';
+        }
+
+        if (d.air_quality_index != null) {
+          document.getElementById('aqi').textContent =
+            d.air_quality_index.toFixed(0) + ' (' + d.air_quality_level + ')';
+        } else {
+          document.getElementById('aqi').textContent = '--';
+        }
+
         if (d.battery_percent !== null) {
           const pct  = d.battery_percent;
           const fill = document.getElementById('battery_fill');
@@ -694,7 +797,8 @@ def start_log():
     current_log_handle.write(
         "timestamp_iso,timestamp_unix,temperature_c,humidity,pressure_hpa,"
         "gas_ohms,battery_percent,battery_mv,dew_point_c,altitude_m,"
-        "input_voltage_mv,output_voltage_mv,load_current_ma\n"
+        "input_voltage_mv,output_voltage_mv,load_current_ma,"
+        "fire_risk_index,fire_risk_level,air_quality_index,air_quality_level\n"
     )
     current_log_handle.flush()
     print(f"Logging → {filepath}")
@@ -769,6 +873,10 @@ def telemetry():
         gas_ohms=bme_data["gas_ohms"],
         dew_point_c=bme_data["dew_point_c"],
         altitude_m=bme_data["altitude_m"],
+        fire_risk_index=bme_data["fire_risk_index"],
+        fire_risk_level=bme_data["fire_risk_level"],
+        air_quality_index=bme_data["air_quality_index"],
+        air_quality_level=bme_data["air_quality_level"],
         battery_percent=battery_pct,
         battery_mv=battery_mv,
         vin_mv=vin_mv,
@@ -801,7 +909,11 @@ def telemetry():
             f"{'' if bme_data['altitude_m'] is None else format(bme_data['altitude_m'], '.2f')},"
             f"{'' if vin_mv is None else vin_mv},"
             f"{'' if vout_mv is None else vout_mv},"
-            f"{'' if load_current_ma is None else load_current_ma}\n"
+            f"{'' if load_current_ma is None else load_current_ma},"
+            f"{'' if bme_data['fire_risk_index'] is None else format(bme_data['fire_risk_index'], '.1f')},"
+            f"{'' if bme_data['fire_risk_level'] is None else bme_data['fire_risk_level']},"
+            f"{'' if bme_data['air_quality_index'] is None else bme_data['air_quality_index']},"
+            f"{'' if bme_data['air_quality_level'] is None else bme_data['air_quality_level']}\n"
         )
         current_log_handle.write(line)
         current_log_handle.flush()
