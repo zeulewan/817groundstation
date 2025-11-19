@@ -273,14 +273,3 @@ Telemetry updates every 1 second via JavaScript polling `/api/telemetry`.
 - Virtual environments must be activated manually unless invoked from systemd.
 
 ---
-
-## Optional Enhancements
-
-- Add GPS, IMU, or additional sensors
-- Add a live HUD overlay (altitude, velocity, heading)
-- Log flight sessions to disk
-- Stream telemetry over WebSocket instead of polling
-- Add joystick or RC control using WebRTC DataChannels
-- Add battery health prediction algorithms
-
-Ask if you want help implementing any of these.
