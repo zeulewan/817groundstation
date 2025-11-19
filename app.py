@@ -6,6 +6,7 @@ import board
 import busio
 import adafruit_bme680
 import os
+import shutil
 from datetime import datetime
 
 # ---------- BME680 SETUP ----------
@@ -55,6 +56,79 @@ def get_bme_readings():
         "gas_ohms": float(bme.gas),
     }
 
+# ---------- SYSTEM STATS (GROUND STATION) ----------
+def get_system_stats():
+    cpu_temp_c = None
+    try:
+        # typical on Raspberry Pi
+        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+            cpu_temp_c = int(f.read().strip()) / 1000.0
+    except:
+        pass
+
+    load_1m = load_5m = load_15m = None
+    try:
+        load_1m, load_5m, load_15m = os.getloadavg()
+    except:
+        pass
+
+    mem_total_kb = None
+    mem_avail_kb = None
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    mem_total_kb = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    mem_avail_kb = int(line.split()[1])
+    except:
+        pass
+
+    mem_total_mb = mem_used_mb = None
+    if mem_total_kb and mem_avail_kb:
+        mem_total_mb = mem_total_kb / 1024.0
+        mem_used_mb = (mem_total_kb - mem_avail_kb) / 1024.0
+
+    disk_free_gb = disk_used_pct = None
+    try:
+        total, used, free = shutil.disk_usage(LOG_DIR)
+        disk_free_gb = free / (1024.0 ** 3)
+        disk_used_pct = used * 100.0 / total
+    except:
+        pass
+
+    ip_address = None
+    try:
+        ip_out = subprocess.check_output(["hostname", "-I"], text=True).strip()
+        if ip_out:
+            ip_address = ip_out.split()[0]
+    except:
+        pass
+
+    wifi_rssi_dbm = None
+    try:
+        iw = subprocess.check_output(
+            ["iwconfig", "wlan0"],
+            text=True,
+            stderr=subprocess.DEVNULL
+        )
+        m = re.search(r"Signal level=(-?\d+)\s*dBm", iw)
+        if m:
+            wifi_rssi_dbm = int(m.group(1))
+    except:
+        pass
+
+    return {
+        "cpu_temp_c": cpu_temp_c,
+        "load_1m": load_1m,
+        "mem_total_mb": mem_total_mb,
+        "mem_used_mb": mem_used_mb,
+        "disk_free_gb": disk_free_gb,
+        "disk_used_pct": disk_used_pct,
+        "ip_address": ip_address,
+        "wifi_rssi_dbm": wifi_rssi_dbm,
+    }
+
 # ---------- FLASK APP ----------
 app = Flask(__name__)
 
@@ -66,7 +140,7 @@ INDEX_HTML = """<!doctype html>
   <title>NAPALM Ground Station – Fire Detection</title>
   <style>
     :root {
-      --bg:#111827;          /* dark grey/blue */
+      --bg:#111827;
       --surface:#111827;
       --panel:#111827;
       --border:#374151;
@@ -106,7 +180,7 @@ INDEX_HTML = """<!doctype html>
 
     .main {
       display:grid;
-      grid-template-columns:320px 2.1fr 420px;
+      grid-template-columns:320px 2.1fr 400px;
       height:calc(100vh - 56px);
     }
 
@@ -123,17 +197,17 @@ INDEX_HTML = """<!doctype html>
     .controls {
       background:var(--surface);
       border-right:1px solid var(--border);
-      padding:16px;
+      padding:12px;
       display:flex;
       flex-direction:column;
-      gap:12px;
+      gap:8px;
       overflow-y:auto;
     }
 
     .card {
       background:var(--panel);
       border:1px solid var(--border);
-      padding:16px;
+      padding:12px;
       box-shadow:none;
     }
 
@@ -142,24 +216,24 @@ INDEX_HTML = """<!doctype html>
       text-transform:uppercase;
       letter-spacing:1.5px;
       color:var(--text-muted);
-      margin-bottom:8px;
+      margin-bottom:6px;
     }
 
     .value {
-      font-size:28px;
+      font-size:24px;
       font-weight:400;
     }
 
     .unit {
-      font-size:14px;
+      font-size:12px;
       color:var(--text-muted);
       margin-left:4px;
     }
 
     button#logBtn {
       width:100%;
-      padding:12px;
-      font-size:14px;
+      padding:10px;
+      font-size:13px;
       font-weight:600;
       border:none;
       background:var(--primary);
@@ -183,8 +257,8 @@ INDEX_HTML = """<!doctype html>
       align-items:center;
       gap:6px;
       color:var(--danger);
-      margin-top:6px;
-      font-size:12px;
+      margin-top:4px;
+      font-size:11px;
     }
 
     .rec.active {
@@ -207,10 +281,28 @@ INDEX_HTML = """<!doctype html>
     .clocks {
       display:flex;
       justify-content:space-between;
-      padding:8px 10px;
+      padding:6px 8px;
       background:#111827;
       border:1px solid var(--border);
-      font-size:13px;
+      font-size:12px;
+    }
+
+    .sys-row {
+      font-size:12px;
+      color:var(--text-muted);
+      line-height:1.4;
+    }
+
+    .notes-textarea {
+      width:100%;
+      height:70px;
+      background:#111827;
+      border:1px solid var(--border);
+      color:var(--text);
+      font-size:12px;
+      padding:6px;
+      outline:none;
+      resize:none;
     }
 
     /* CENTER COLUMN: VIDEO + CONSOLE */
@@ -218,8 +310,8 @@ INDEX_HTML = """<!doctype html>
     .center-column {
       display:flex;
       flex-direction:column;
-      gap:12px;
-      padding:16px 16px 16px 0;
+      gap:8px;
+      padding:12px 12px 12px 0;
       overflow:hidden;
     }
 
@@ -240,9 +332,9 @@ INDEX_HTML = """<!doctype html>
     .terminal {
       background:#111827;
       border:1px solid var(--border);
-      padding:10px;
+      padding:8px;
       font-family:'SF Mono', Menlo, monospace;
-      font-size:12px;
+      font-size:11px;
       height:100%;
       display:flex;
       flex-direction:column;
@@ -253,7 +345,7 @@ INDEX_HTML = """<!doctype html>
       overflow-y:auto;
       color:#c7d2fe;
       white-space:pre-wrap;
-      margin-bottom:8px;
+      margin-bottom:6px;
       padding-right:4px;
     }
 
@@ -267,15 +359,15 @@ INDEX_HTML = """<!doctype html>
 
     .term-input {
       display:flex;
-      gap:6px;
+      gap:4px;
       align-items:center;
       border-top:1px solid var(--border);
-      padding-top:6px;
+      padding-top:4px;
     }
 
     .term-input span {
       color:#22c55e;
-      font-size:12px;
+      font-size:11px;
     }
 
     #term-input {
@@ -285,50 +377,63 @@ INDEX_HTML = """<!doctype html>
       color:#e5e7eb;
       outline:none;
       font-family:inherit;
-      font-size:12px;
+      font-size:11px;
     }
 
     /* RIGHT COLUMN: DATA */
 
     .data-column {
       border-left:1px solid var(--border);
-      padding:16px 16px 16px 0;
+      padding:12px 12px 12px 0;
       display:flex;
       flex-direction:column;
-      gap:12px;
-      overflow-y:auto;
+      gap:8px;
+      overflow-y:hidden; /* avoid scroll */
     }
 
     .metric-card .value {
-      font-size:24px;
+      font-size:20px;
     }
 
     .battery-bar {
       height:6px;
       background:#111827;
       border:1px solid var(--border);
-      margin-top:6px;
+      margin-top:4px;
     }
 
     .battery-fill {
       height:100%;
       width:0%;
       background:var(--primary);
-      transition:width 0.6s;
+      transition:width 0.4s;
     }
 
     .status {
-      font-size:12px;
-      padding:8px;
+      font-size:11px;
+      padding:6px;
       border:1px solid var(--border);
       background:#111827;
       color:var(--text-muted);
       text-align:left;
     }
 
+    .compact-grid {
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:4px 8px;
+      font-size:12px;
+      color:var(--text-muted);
+    }
+
+    .compact-grid div span {
+      color:var(--text);
+      margin-left:2px;
+    }
+
     canvas {
       width:100%;
-      height:80px;
+      height:50px;
       display:block;
       background:#111827;
     }
@@ -364,7 +469,32 @@ INDEX_HTML = """<!doctype html>
           <div class="dot"></div>
           <span>Recording flight data...</span>
         </div>
-        <div id="log-info" style="margin-top:6px;font-size:11px;color:var(--text-muted);"></div>
+        <div id="log-info" style="margin-top:4px;font-size:11px;color:var(--text-muted);"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">System</div>
+        <div class="sys-row">CPU: <span id="sys-cpu-temp">--</span></div>
+        <div class="sys-row">Load: <span id="sys-load">--</span></div>
+        <div class="sys-row">RAM: <span id="sys-ram">--</span></div>
+        <div class="sys-row">Disk: <span id="sys-disk">--</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Link</div>
+        <div class="sys-row">Latency: <span id="link-lat">--</span></div>
+        <div class="sys-row">Loss (30s): <span id="link-loss">--</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Network</div>
+        <div class="sys-row">IP: <span id="net-ip">--</span></div>
+        <div class="sys-row">RSSI: <span id="net-rssi">--</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Mission Notes</div>
+        <textarea id="mission-notes" class="notes-textarea" placeholder="Notes, location, operator..."></textarea>
       </div>
     </div>
 
@@ -390,47 +520,33 @@ INDEX_HTML = """<!doctype html>
       </div>
     </div>
 
-    <!-- RIGHT: DATA -->
+    <!-- RIGHT: DATA (compact, no scroll) -->
     <div class="data-column">
       <div class="card metric-card">
         <div class="card-title">Battery</div>
         <div class="value">
           <span id="battery">--</span><span class="unit">%</span>
         </div>
-        <div id="battery_raw" style="font-size:13px;color:var(--text-muted);margin-top:2px;"></div>
+        <div id="battery_raw" style="font-size:11px;color:var(--text-muted);margin-top:2px;"></div>
         <div class="battery-bar">
           <div class="battery-fill" id="battery_fill"></div>
         </div>
+        <canvas id="batteryChart" width="380" height="50"></canvas>
       </div>
 
       <div class="card metric-card">
         <div class="card-title">Temperature</div>
         <div class="value"><span id="temp">--</span><span class="unit"> °C</span></div>
-      </div>
-
-      <div class="card metric-card">
-        <div class="card-title">Humidity</div>
-        <div class="value"><span id="hum">--</span><span class="unit"> %</span></div>
-      </div>
-
-      <div class="card metric-card">
-        <div class="card-title">Pressure</div>
-        <div class="value"><span id="press">--</span><span class="unit"> hPa</span></div>
-      </div>
-
-      <div class="card metric-card">
-        <div class="card-title">Gas Resistance</div>
-        <div class="value"><span id="gas">--</span><span class="unit"> Ω</span></div>
+        <canvas id="tempChart" width="380" height="50"></canvas>
       </div>
 
       <div class="card">
-        <div class="card-title">Battery – Last 2 Minutes</div>
-        <canvas id="batteryChart" width="400" height="80"></canvas>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Temperature – Last 2 Minutes</div>
-        <canvas id="tempChart" width="400" height="80"></canvas>
+        <div class="card-title">Environment</div>
+        <div class="compact-grid">
+          <div>Humidity<span id="hum">--</span><span class="unit">%</span></div>
+          <div>Pressure<span id="press">--</span><span class="unit">hPa</span></div>
+          <div>Gas<span id="gas">--</span><span class="unit">Ω</span></div>
+        </div>
       </div>
 
       <div class="card">
@@ -451,16 +567,19 @@ INDEX_HTML = """<!doctype html>
     const promptPath = document.getElementById('prompt-path');
     const promptPathInline = document.getElementById('prompt-path-inline');
 
-    // Colors for charts from CSS vars
     const cssVars = getComputedStyle(document.documentElement);
     const colorPrimary = cssVars.getPropertyValue('--primary').trim() || '#38bdf8';
     const colorGreen = cssVars.getPropertyValue('--green').trim() || '#22c55e';
     const colorMuted = cssVars.getPropertyValue('--text-muted').trim() || '#9ca3af';
+    const colorDanger = cssVars.getPropertyValue('--danger').trim() || '#ef4444';
+    const colorWarning = cssVars.getPropertyValue('--warning').trim() || '#f59e0b';
 
-    // Simple history buffers for charts (approx 2 minutes at 1 Hz)
     const HISTORY_LEN = 120;
     const batteryHistory = [];
     const tempHistory = [];
+
+    const linkHistory = []; // {ok:bool}
+    const MAX_LINK_SAMPLES = 30;
 
     function pushHistory(arr, value) {
       if (value === null || value === undefined) return;
@@ -477,9 +596,7 @@ INDEX_HTML = """<!doctype html>
 
       ctx.clearRect(0, 0, w, h);
 
-      // No data or single point: nothing to draw
       if (!data || data.length < 2) {
-        // draw a subtle baseline
         ctx.strokeStyle = colorMuted;
         ctx.beginPath();
         ctx.moveTo(0, h - 1);
@@ -491,16 +608,14 @@ INDEX_HTML = """<!doctype html>
       let min = fixedMin !== null ? fixedMin : Math.min.apply(null, data);
       let max = fixedMax !== null ? fixedMax : Math.max.apply(null, data);
       if (min === max) {
-        // avoid division by zero
         min -= 1;
         max += 1;
       }
 
       const paddingX = 2;
-      const paddingY = 4;
+      const paddingY = 3;
       const innerW = w - paddingX * 2;
       const innerH = h - paddingY * 2;
-
       const stepX = innerW / (data.length - 1);
 
       ctx.strokeStyle = colorMuted;
@@ -534,7 +649,7 @@ INDEX_HTML = """<!doctype html>
       document.getElementById('local').textContent = n.toTimeString().substr(0, 8);
     }, 500);
 
-    // Mission timer (stops when logging stops, keeps final value)
+    // Mission timer
     setInterval(() => {
       let s = elapsedSeconds;
       if (missionStart) {
@@ -582,7 +697,6 @@ INDEX_HTML = """<!doctype html>
           logInfo.textContent = '';
         }
 
-        // New mission: reset elapsed and start timer
         elapsedSeconds = 0;
         missionStart = Date.now();
 
@@ -591,7 +705,6 @@ INDEX_HTML = """<!doctype html>
         i.classList.add('active');
         logging = true;
       } else {
-        // Stop mission timer, keep final time displayed
         if (missionStart) {
           elapsedSeconds += Math.floor((Date.now() - missionStart) / 1000);
           missionStart = null;
@@ -651,14 +764,34 @@ INDEX_HTML = """<!doctype html>
       }
     })();
 
+    // Link quality tracking
+    function recordLink(ok) {
+      linkHistory.push({ok});
+      if (linkHistory.length > MAX_LINK_SAMPLES) linkHistory.shift();
+      const total = linkHistory.length;
+      if (total === 0) {
+        document.getElementById('link-loss').textContent = '--';
+        return;
+      }
+      const good = linkHistory.filter(x => x.ok).length;
+      const lossPct = 100 * (total - good) / total;
+      document.getElementById('link-loss').textContent = lossPct.toFixed(0) + '%';
+    }
+
     // Telemetry updater
     async function upd() {
+      const start = performance.now();
       try {
         const r = await fetch('/api/telemetry');
         const d = await r.json();
 
+        const latency = performance.now() - start;
+        document.getElementById('link-lat').textContent = latency.toFixed(0) + ' ms';
+        recordLink(true);
+
         lastUpdate = Date.now();
 
+        // Metrics
         document.getElementById('temp').textContent = d.temperature_c.toFixed(1);
         document.getElementById('hum').textContent = d.humidity.toFixed(1);
         document.getElementById('press').textContent = d.pressure_hpa.toFixed(1);
@@ -674,8 +807,8 @@ INDEX_HTML = """<!doctype html>
           fill.style.width = pct + '%';
 
           let color = colorPrimary;
-          if (pct <= 20) color = cssVars.getPropertyValue('--danger').trim() || '#ef4444';
-          else if (pct <= 40) color = cssVars.getPropertyValue('--warning').trim() || '#f59e0b';
+          if (pct <= 20) color = colorDanger;
+          else if (pct <= 40) color = colorWarning;
           fill.style.background = color;
 
           pushHistory(batteryHistory, pct);
@@ -683,6 +816,40 @@ INDEX_HTML = """<!doctype html>
 
         pushHistory(tempHistory, d.temperature_c);
 
+        // System stats
+        if (d.cpu_temp_c !== null && d.cpu_temp_c !== undefined) {
+          document.getElementById('sys-cpu-temp').textContent = d.cpu_temp_c.toFixed(1) + '°C';
+        } else {
+          document.getElementById('sys-cpu-temp').textContent = '--';
+        }
+
+        if (d.load_1m !== null && d.load_1m !== undefined) {
+          document.getElementById('sys-load').textContent = d.load_1m.toFixed(2);
+        } else {
+          document.getElementById('sys-load').textContent = '--';
+        }
+
+        if (d.mem_total_mb && d.mem_used_mb) {
+          document.getElementById('sys-ram').textContent =
+            d.mem_used_mb.toFixed(0) + ' / ' + d.mem_total_mb.toFixed(0) + ' MB';
+        } else {
+          document.getElementById('sys-ram').textContent = '--';
+        }
+
+        if (d.disk_free_gb && d.disk_used_pct !== null && d.disk_used_pct !== undefined) {
+          document.getElementById('sys-disk').textContent =
+            d.disk_used_pct.toFixed(0) + '% • ' + d.disk_free_gb.toFixed(1) + ' GB free';
+        } else {
+          document.getElementById('sys-disk').textContent = '--';
+        }
+
+        document.getElementById('net-ip').textContent = d.ip_address || '--';
+        document.getElementById('net-rssi').textContent =
+          (d.wifi_rssi_dbm !== null && d.wifi_rssi_dbm !== undefined)
+            ? d.wifi_rssi_dbm + ' dBm'
+            : '--';
+
+        // Status
         let status = 'Telemetry OK';
         if (d.battery_percent !== null && d.battery_percent <= 20) {
           status += ' • LOW BATTERY';
@@ -691,11 +858,12 @@ INDEX_HTML = """<!doctype html>
         document.getElementById('status').textContent =
           status + ' • ' + new Date(d.timestamp * 1000).toLocaleString().slice(0, 24);
 
-        // Redraw charts
+        // Charts
         drawSparkline('batteryChart', batteryHistory, colorPrimary, 0, 100);
         drawSparkline('tempChart', tempHistory, colorGreen, null, null);
       } catch {
         document.getElementById('status').textContent = 'Connection lost';
+        recordLink(false);
       }
     }
 
@@ -715,11 +883,21 @@ INDEX_HTML = """<!doctype html>
     // Focus terminal on load
     window.addEventListener('load', () => {
       inp.focus();
+      // Mission notes from localStorage
+      const notes = localStorage.getItem('missionNotes');
+      if (notes !== null) {
+        document.getElementById('mission-notes').value = notes;
+      }
+    });
+
+    // Mission notes persistence
+    document.getElementById('mission-notes').addEventListener('input', e => {
+      localStorage.setItem('missionNotes', e.target.value);
     });
 
     // 'L' hotkey to toggle logging (ignore if typing in an input)
     window.addEventListener('keydown', e => {
-      if (e.key === 'l' && !(e.target && e.target.tagName === 'INPUT')) {
+      if (e.key === 'l' && !(e.target && e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
         document.getElementById('logBtn').click();
       }
     });
@@ -818,6 +996,7 @@ def run_command():
 def telemetry():
     bme_data = get_bme_readings()
     battery_pct, battery_mv = get_battery_percent()
+    sys_stats = get_system_stats()
     resp = jsonify(
         temperature_c=bme_data["temperature_c"],
         humidity=bme_data["humidity"],
@@ -825,7 +1004,8 @@ def telemetry():
         gas_ohms=bme_data["gas_ohms"],
         battery_percent=battery_pct,
         battery_mv=battery_mv,
-        timestamp=time.time()
+        timestamp=time.time(),
+        **sys_stats
     )
     if current_log_handle:
         line = (
