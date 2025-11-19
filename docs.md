@@ -18,10 +18,63 @@ This dashboard runs automatically on boot via a systemd service.
 
 ---
 
+## Hardware Requirements
+
+- Raspberry Pi with CSI camera (IMX708 / Camera Module 3)
+- BME680 sensor on I²C address `0x77`
+- LiFePO4wered Pi UPS on I²C address `0x43`
+- Working WiFi or Ethernet connection
+
+---
+
+## Software Requirements
+
+### System Packages (APT)
+
+Install:
+
+sudo apt update
+sudo apt install -y \
+    python3-full \
+    python3-venv \
+    python3-pip \
+    python3-smbus \
+    i2c-tools \
+    git \
+    zsh
+
+Why these matter:
+
+| Package | Purpose |
+|--------|---------|
+| python3-full | Required so venv + pip work (fixes PEP 668 issues) |
+| python3-venv | Needed for creating isolated Python environments |
+| python3-pip | Package installer used inside the venv |
+| python3-smbus | Python access to I²C |
+| i2c-tools | Tools like `i2cdetect` to debug sensors |
+| git | Needed to install LiFePO4wered utilities |
+| zsh | For your shell setup (optional) |
+
+---
+
+## Camera-Streamer Requirements
+
+Make sure camera-streamer is installed and running.  
+Its WebRTC viewer must be reachable at:
+
+http://drone.local:8080/webrtc
+
+If camera-streamer does not run:
+- Reinstall ***
+- Ensure systemd service is active (camera-streamer.service)
+
+---
+
 ## Prerequisites
 
 ### I²C Enabled
-Enable I2C:
+
+Enable I²C:
 
 sudo raspi-config  
 → Interface Options → I2C → Enable
@@ -36,21 +89,39 @@ Expected:
 
 ---
 
-## Installing Dependencies
+## Creating the Python Virtual Environment
 
-Install system packages:
-
-sudo apt update
-sudo apt install -y python3-pip python3-venv python3-smbus i2c-tools git
-
-Set up a Python virtual environment:
+Create a venv:
 
 python3 -m venv ~/groundstation-venv
+
+Activate it:
+
 source ~/groundstation-venv/bin/activate
 
-Install Python libraries:
+Verify activation:
+
+echo $VIRTUAL_ENV
+
+It MUST output:
+
+/home/drone/groundstation-venv
+
+If it’s blank, you are NOT in the venv.
+
+---
+
+## Installing Python Libraries (Inside the venv)
 
 pip install flask adafruit-circuitpython-bme680 adafruit-blinka
+
+Why:
+
+| Library | Purpose |
+|---------|---------|
+| Flask | Web dashboard server |
+| adafruit-circuitpython-bme680 | Reads BME680 sensor data |
+| adafruit-blinka | Hardware abstraction layer for I²C |
 
 ---
 
@@ -58,13 +129,17 @@ pip install flask adafruit-circuitpython-bme680 adafruit-blinka
 
 Clone and install UPS utilities (only once):
 
-cd ~
-git clone https://github.com/xorbit/LiFePO4wered-Pi.git
-cd LiFePO4wered-Pi
-make
-sudo make install
+cd ~  
+git clone https://github.com/xorbit/LiFePO4wered-Pi.git  
+cd LiFePO4wered-Pi  
+make  
+sudo make install  
 
-This installs `lifepo4wered-cli`, used to read VBAT voltage.
+This installs the command:
+
+lifepo4wered-cli
+
+Used to read VBAT battery voltage.
 
 ---
 
@@ -72,26 +147,39 @@ This installs `lifepo4wered-cli`, used to read VBAT voltage.
 
 Create the directory:
 
-mkdir -p ~/groundstation
+mkdir -p ~/groundstation  
 cd ~/groundstation
 
-Create `app.py` with the complete Flask app:
+Place `app.py` inside this folder.
 
-(Already provided above; this file handles WebRTC embedding, BME680 reads, and UPS battery reads.)
+This app:
 
-Run manually to test:
+- Embeds the WebRTC video using an HTML `<iframe>`
+- Serves the ground station dashboard UI
+- Polls `/api/telemetry` every 1 second
+- Reads:
+  - BME680 sensor values
+  - LiFePO4wered UPS battery voltage
+- Converts voltage into battery percentage
+- Outputs JSON to the frontend
 
-source ~/groundstation-venv/bin/activate
-cd ~/groundstation
+---
+
+## Running the Ground Station Manually
+
+source ~/groundstation-venv/bin/activate  
+cd ~/groundstation  
 python app.py
 
-Open in browser:
+Then open:
 
 http://drone.local:5000/
 
 You should see:
-- WebRTC video stream on the left  
-- Sensor telemetry on the right  
+
+- Live WebRTC camera feed (from camera-streamer)
+- Temperature, humidity, pressure, gas readings
+- Battery percentage + raw millivolt reading
 
 ---
 
@@ -118,9 +206,9 @@ WantedBy=multi-user.target
 
 Enable and start:
 
-sudo systemctl daemon-reload
-sudo systemctl enable groundstation.service
-sudo systemctl start groundstation.service
+sudo systemctl daemon-reload  
+sudo systemctl enable groundstation.service  
+sudo systemctl start groundstation.service  
 
 Check status:
 
@@ -134,7 +222,7 @@ Main dashboard (video + telemetry):
 
 http://drone.local:5000/
 
-Raw camera-streamer interface (optional):
+Raw camera-streamer interface:
 
 http://drone.local:8080/
 
@@ -153,13 +241,14 @@ http://drone.local:8080/webrtc
 - Gas resistance (Ω)
 
 ### LiFePO4wered Pi UPS
-- Reads `VBAT` in millivolts via `lifepo4wered-cli get VBAT`
-- Converts voltage to percentage:
-  - 3200 mV ≈ 0%
-  - 3600 mV ≈ 100%
+- Battery voltage read via:
+  lifepo4wered-cli get VBAT
+- Converted to percentage:
+  - 3200 mV = 0%
+  - 3600 mV = 100%
 
-### Update rate
-Telemetry updates every 1 second in the browser via `/api/telemetry`.
+### Update Rate
+Telemetry updates every 1 second via JavaScript polling `/api/telemetry`.
 
 ---
 
@@ -167,27 +256,31 @@ Telemetry updates every 1 second in the browser via `/api/telemetry`.
 
 | Path | Description |
 |------|-------------|
-| `/home/drone/groundstation/app.py` | The dashboard server code |
+| `/home/drone/groundstation/app.py` | Ground station server code |
 | `/home/drone/groundstation-venv/` | Python virtual environment |
 | `/etc/systemd/system/groundstation.service` | systemd service file |
-| `/usr/bin/lifepo4wered-cli` | UPS utility |
-| `/usr/bin/camera-streamer` | camera-streamer binary |
+| `/usr/bin/lifepo4wered-cli` | UPS command |
+| `/usr/bin/camera-streamer` | Camera-streamer binary |
+| `/var/log/syslog` | System logs (fallback) |
 
 ---
 
 ## Notes
 
-- WebRTC is streamed directly from camera-streamer inside an iframe.
-- Flask app only handles telemetry, not the video itself.
-- Systemd ensures both camera-streamer and the ground station run automatically on boot.
+- WebRTC video is served by camera-streamer, NOT Flask.
+- Flask only provides telemetry + UI.
+- Systemd ensures both groundstation and camera-streamer run automatically.
+- Virtual environments must be activated manually unless invoked from systemd.
 
 ---
 
-## Next Steps (Optional)
+## Optional Enhancements
 
-- Add GPS, IMU, or barometer telemetry
-- Create a “flight HUD”
-- Add joystick control over WebRTC data channels
-- Add mission logging into CSV files
+- Add GPS, IMU, or additional sensors
+- Add a live HUD overlay (altitude, velocity, heading)
+- Log flight sessions to disk
+- Stream telemetry over WebSocket instead of polling
+- Add joystick or RC control using WebRTC DataChannels
+- Add battery health prediction algorithms
 
-Ask if you'd like to extend the dashboard.
+Ask if you want help implementing any of these.
