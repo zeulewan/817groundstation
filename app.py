@@ -19,7 +19,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 current_log_file = None
 current_log_handle = None
 
-# ---------- SHELL CWD FOR CONSOLE ----------
+# ---------- SHELL CWD (for /api/run_command, if you still want it) ----------
 current_cwd = os.path.expanduser("~")
 
 # ---------- REALISTIC BATTERY ----------
@@ -60,7 +60,6 @@ def get_bme_readings():
 def get_system_stats():
     cpu_temp_c = None
     try:
-        # typical on Raspberry Pi
         with open("/sys/class/thermal/thermal_zone0/temp") as f:
             cpu_temp_c = int(f.read().strip()) / 1000.0
     except:
@@ -305,7 +304,7 @@ INDEX_HTML = """<!doctype html>
       resize:none;
     }
 
-    /* CENTER COLUMN: VIDEO + CONSOLE */
+    /* CENTER COLUMN: VIDEO + LIVE LOG */
 
     .center-column {
       display:flex;
@@ -322,62 +321,62 @@ INDEX_HTML = """<!doctype html>
       background:#000;
     }
 
-    .terminal-card {
+    .log-card {
       flex:1;
       min-height:0;
       display:flex;
       flex-direction:column;
     }
 
-    .terminal {
-      background:#111827;
+    .log-container {
       border:1px solid var(--border);
-      padding:8px;
-      font-family:'SF Mono', Menlo, monospace;
-      font-size:11px;
+      background:#111827;
+      margin-top:4px;
       height:100%;
       display:flex;
       flex-direction:column;
+      font-size:11px;
     }
 
-    #term-output {
+    .log-header {
+      padding:4px 6px;
+      border-bottom:1px solid var(--border);
+      color:var(--text-muted);
+    }
+
+    .log-body {
       flex:1;
       overflow-y:auto;
-      color:#c7d2fe;
-      white-space:pre-wrap;
-      margin-bottom:6px;
-      padding-right:4px;
     }
 
-    .prompt {
-      color:#22c55e;
-    }
-
-    #term-output .error {
-      color:#f97373;
-    }
-
-    .term-input {
-      display:flex;
-      gap:4px;
-      align-items:center;
-      border-top:1px solid var(--border);
-      padding-top:4px;
-    }
-
-    .term-input span {
-      color:#22c55e;
+    .log-table {
+      width:100%;
+      border-collapse:collapse;
+      font-family:'SF Mono', Menlo, monospace;
       font-size:11px;
     }
 
-    #term-input {
-      flex:1;
-      background:transparent;
-      border:none;
-      color:#e5e7eb;
-      outline:none;
-      font-family:inherit;
-      font-size:11px;
+    .log-table thead {
+      position:sticky;
+      top:0;
+      background:#111827;
+    }
+
+    .log-table th,
+    .log-table td {
+      padding:2px 4px;
+      border-bottom:1px solid #1f2933;
+      white-space:nowrap;
+    }
+
+    .log-table th {
+      text-align:left;
+      color:var(--text-muted);
+      font-weight:400;
+    }
+
+    .log-table tbody tr:nth-child(even) {
+      background:#101623;
     }
 
     /* RIGHT COLUMN: DATA */
@@ -388,7 +387,7 @@ INDEX_HTML = """<!doctype html>
       display:flex;
       flex-direction:column;
       gap:8px;
-      overflow-y:hidden; /* avoid scroll */
+      overflow-y:hidden;
     }
 
     .metric-card .value {
@@ -498,7 +497,7 @@ INDEX_HTML = """<!doctype html>
       </div>
     </div>
 
-    <!-- CENTER: VIDEO + CONSOLE -->
+    <!-- CENTER: VIDEO + LIVE LOG -->
     <div class="center-column">
       <div class="video-container">
         <iframe src="http://drone.local:8080/webrtc"
@@ -506,15 +505,25 @@ INDEX_HTML = """<!doctype html>
                 title=""></iframe>
       </div>
 
-      <div class="card terminal-card">
-        <div class="card-title">System Console</div>
-        <div class="terminal">
-          <div id="term-output">
-            <span class="prompt"><span id="prompt-path">~</span>$</span> Ready. Type any command.
-          </div>
-          <div class="term-input">
-            <span class="prompt"><span id="prompt-path-inline">~</span>$</span>
-            <input type="text" id="term-input" autocomplete="off">
+      <div class="card log-card">
+        <div class="card-title">Live Log</div>
+        <div class="log-container">
+          <div class="log-header">Streaming recent logged samples while recording</div>
+          <div class="log-body" id="live-log-container">
+            <table class="log-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Temp (°C)</th>
+                  <th>Hum (%)</th>
+                  <th>Press (hPa)</th>
+                  <th>Gas (Ω)</th>
+                  <th>Bat (%)</th>
+                  <th>Bat (mV)</th>
+                </tr>
+              </thead>
+              <tbody id="live-log-body"></tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -559,26 +568,20 @@ INDEX_HTML = """<!doctype html>
   <script>
     let logging = false;
     let missionStart = null;
-    let elapsedSeconds = 0;  // total elapsed in seconds for the last mission
+    let elapsedSeconds = 0;
     let lastUpdate = 0;
-
-    const out = document.getElementById('term-output');
-    const inp = document.getElementById('term-input');
-    const promptPath = document.getElementById('prompt-path');
-    const promptPathInline = document.getElementById('prompt-path-inline');
 
     const cssVars = getComputedStyle(document.documentElement);
     const colorPrimary = cssVars.getPropertyValue('--primary').trim() || '#38bdf8';
-    const colorGreen = cssVars.getPropertyValue('--green').trim() || '#22c55e';
-    const colorMuted = cssVars.getPropertyValue('--text-muted').trim() || '#9ca3af';
-    const colorDanger = cssVars.getPropertyValue('--danger').trim() || '#ef4444';
+    const colorGreen   = cssVars.getPropertyValue('--green').trim()   || '#22c55e';
+    const colorMuted   = cssVars.getPropertyValue('--text-muted').trim() || '#9ca3af';
+    const colorDanger  = cssVars.getPropertyValue('--danger').trim()  || '#ef4444';
     const colorWarning = cssVars.getPropertyValue('--warning').trim() || '#f59e0b';
 
     const HISTORY_LEN = 120;
     const batteryHistory = [];
     const tempHistory = [];
-
-    const linkHistory = []; // {ok:bool}
+    const linkHistory = [];
     const MAX_LINK_SAMPLES = 30;
 
     function pushHistory(arr, value) {
@@ -587,7 +590,7 @@ INDEX_HTML = """<!doctype html>
       if (arr.length > HISTORY_LEN) arr.shift();
     }
 
-    function drawSparkline(canvasId, data, color, fixedMin=null, fixedMax=null) {
+    function drawSparkline(canvasId, data, color, fixedMin = null, fixedMax = null) {
       const canvas = document.getElementById(canvasId);
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
@@ -636,20 +639,25 @@ INDEX_HTML = """<!doctype html>
       ctx.stroke();
     }
 
-    function setPromptPath(cwd) {
-      if (!cwd) return;
-      promptPath.textContent = cwd + ' ';
-      promptPathInline.textContent = cwd + ' ';
+    function recordLink(ok) {
+      linkHistory.push({ ok });
+      if (linkHistory.length > MAX_LINK_SAMPLES) linkHistory.shift();
+      const total = linkHistory.length;
+      if (total === 0) {
+        document.getElementById('link-loss').textContent = '--';
+        return;
+      }
+      const good = linkHistory.filter(x => x.ok).length;
+      const lossPct = 100 * (total - good) / total;
+      document.getElementById('link-loss').textContent = lossPct.toFixed(0) + '%';
     }
 
-    // Clocks
     setInterval(() => {
       const n = new Date();
-      document.getElementById('utc').textContent = n.toISOString().substr(11, 8);
+      document.getElementById('utc').textContent   = n.toISOString().substr(11, 8);
       document.getElementById('local').textContent = n.toTimeString().substr(0, 8);
     }, 500);
 
-    // Mission timer
     setInterval(() => {
       let s = elapsedSeconds;
       if (missionStart) {
@@ -661,7 +669,6 @@ INDEX_HTML = """<!doctype html>
       document.getElementById('timer').textContent = `${h}:${m}:${sec}`;
     }, 500);
 
-    // Logging button
     document.getElementById('logBtn').onclick = async () => {
       const b = document.getElementById('logBtn');
       const i = document.getElementById('recIndicator');
@@ -722,63 +729,6 @@ INDEX_HTML = """<!doctype html>
       }
     };
 
-    // Terminal
-    inp.addEventListener('keydown', async e => {
-      if (e.key !== 'Enter') return;
-      const c = inp.value.trim();
-      if (!c) {
-        inp.value = '';
-        return;
-      }
-
-      out.innerHTML += `<br><span class="prompt">${promptPathInline.textContent}$</span> ${c}<br>`;
-
-      const r = await fetch('/api/run_command', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({cmd:c})
-      });
-      const d = await r.json();
-      if (d.cwd) {
-        setPromptPath(d.cwd);
-      }
-
-      const t = (d.output || '').replace(/\\n/g,'<br>').replace(/\\t/g,'&nbsp;&nbsp;&nbsp;&nbsp;');
-      out.innerHTML += `<span class="${d.error ? 'error' : ''}">${t || '(no output)'}</span><br>`;
-      out.scrollTop = out.scrollHeight;
-      inp.value = '';
-    });
-
-    // Initialize prompt cwd
-    (async () => {
-      try {
-        const r = await fetch('/api/run_command', {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({cmd:""})
-        });
-        const d = await r.json();
-        if (d.cwd) setPromptPath(d.cwd);
-      } catch (e) {
-        // ignore
-      }
-    })();
-
-    // Link quality tracking
-    function recordLink(ok) {
-      linkHistory.push({ok});
-      if (linkHistory.length > MAX_LINK_SAMPLES) linkHistory.shift();
-      const total = linkHistory.length;
-      if (total === 0) {
-        document.getElementById('link-loss').textContent = '--';
-        return;
-      }
-      const good = linkHistory.filter(x => x.ok).length;
-      const lossPct = 100 * (total - good) / total;
-      document.getElementById('link-loss').textContent = lossPct.toFixed(0) + '%';
-    }
-
-    // Telemetry updater
     async function upd() {
       const start = performance.now();
       try {
@@ -791,23 +741,22 @@ INDEX_HTML = """<!doctype html>
 
         lastUpdate = Date.now();
 
-        // Metrics
-        document.getElementById('temp').textContent = d.temperature_c.toFixed(1);
-        document.getElementById('hum').textContent = d.humidity.toFixed(1);
+        document.getElementById('temp').textContent  = d.temperature_c.toFixed(1);
+        document.getElementById('hum').textContent   = d.humidity.toFixed(1);
         document.getElementById('press').textContent = d.pressure_hpa.toFixed(1);
-        document.getElementById('gas').textContent = Math.round(d.gas_ohms).toLocaleString();
+        document.getElementById('gas').textContent   = Math.round(d.gas_ohms).toLocaleString();
 
         if (d.battery_percent !== null) {
-          const pct = d.battery_percent;
+          const pct  = d.battery_percent;
           const fill = document.getElementById('battery_fill');
-          const val = document.getElementById('battery');
+          const val  = document.getElementById('battery');
 
           val.textContent = pct;
           document.getElementById('battery_raw').textContent = d.battery_mv + ' mV';
           fill.style.width = pct + '%';
 
           let color = colorPrimary;
-          if (pct <= 20) color = colorDanger;
+          if (pct <= 20)      color = colorDanger;
           else if (pct <= 40) color = colorWarning;
           fill.style.background = color;
 
@@ -816,27 +765,26 @@ INDEX_HTML = """<!doctype html>
 
         pushHistory(tempHistory, d.temperature_c);
 
-        // System stats
-        if (d.cpu_temp_c !== null && d.cpu_temp_c !== undefined) {
+        if (d.cpu_temp_c != null) {
           document.getElementById('sys-cpu-temp').textContent = d.cpu_temp_c.toFixed(1) + '°C';
         } else {
           document.getElementById('sys-cpu-temp').textContent = '--';
         }
 
-        if (d.load_1m !== null && d.load_1m !== undefined) {
+        if (d.load_1m != null) {
           document.getElementById('sys-load').textContent = d.load_1m.toFixed(2);
         } else {
           document.getElementById('sys-load').textContent = '--';
         }
 
-        if (d.mem_total_mb && d.mem_used_mb) {
+        if (d.mem_total_mb != null && d.mem_used_mb != null) {
           document.getElementById('sys-ram').textContent =
             d.mem_used_mb.toFixed(0) + ' / ' + d.mem_total_mb.toFixed(0) + ' MB';
         } else {
           document.getElementById('sys-ram').textContent = '--';
         }
 
-        if (d.disk_free_gb && d.disk_used_pct !== null && d.disk_used_pct !== undefined) {
+        if (d.disk_free_gb != null && d.disk_used_pct != null) {
           document.getElementById('sys-disk').textContent =
             d.disk_used_pct.toFixed(0) + '% • ' + d.disk_free_gb.toFixed(1) + ' GB free';
         } else {
@@ -845,11 +793,8 @@ INDEX_HTML = """<!doctype html>
 
         document.getElementById('net-ip').textContent = d.ip_address || '--';
         document.getElementById('net-rssi').textContent =
-          (d.wifi_rssi_dbm !== null && d.wifi_rssi_dbm !== undefined)
-            ? d.wifi_rssi_dbm + ' dBm'
-            : '--';
+          (d.wifi_rssi_dbm != null) ? d.wifi_rssi_dbm + ' dBm' : '--';
 
-        // Status
         let status = 'Telemetry OK';
         if (d.battery_percent !== null && d.battery_percent <= 20) {
           status += ' • LOW BATTERY';
@@ -858,10 +803,34 @@ INDEX_HTML = """<!doctype html>
         document.getElementById('status').textContent =
           status + ' • ' + new Date(d.timestamp * 1000).toLocaleString().slice(0, 24);
 
-        // Charts
         drawSparkline('batteryChart', batteryHistory, colorPrimary, 0, 100);
-        drawSparkline('tempChart', tempHistory, colorGreen, null, null);
-      } catch {
+        drawSparkline('tempChart',    tempHistory,    colorGreen,  null, null);
+
+        if (logging) {
+          const tbody = document.getElementById('live-log-body');
+          const tr = document.createElement('tr');
+          const t = new Date(d.timestamp * 1000);
+          const timeStr = t.toISOString().slice(11, 19);
+
+          tr.innerHTML = `
+            <td>${timeStr}</td>
+            <td>${d.temperature_c.toFixed(2)}</td>
+            <td>${d.humidity.toFixed(1)}</td>
+            <td>${d.pressure_hpa.toFixed(1)}</td>
+            <td>${Math.round(d.gas_ohms)}</td>
+            <td>${d.battery_percent !== null ? d.battery_percent : ''}</td>
+            <td>${d.battery_mv !== null ? d.battery_mv : ''}</td>
+          `;
+          tbody.appendChild(tr);
+
+          while (tbody.rows.length > HISTORY_LEN) {
+            tbody.deleteRow(0);
+          }
+
+          const container = document.getElementById('live-log-container');
+          container.scrollTop = container.scrollHeight;
+        }
+      } catch (e) {
         document.getElementById('status').textContent = 'Connection lost';
         recordLink(false);
       }
@@ -870,7 +839,6 @@ INDEX_HTML = """<!doctype html>
     setInterval(upd, 1000);
     upd();
 
-    // Stale telemetry watchdog
     setInterval(() => {
       if (lastUpdate && Date.now() - lastUpdate > 5000) {
         const s = document.getElementById('status');
@@ -880,29 +848,24 @@ INDEX_HTML = """<!doctype html>
       }
     }, 2000);
 
-    // Focus terminal on load
     window.addEventListener('load', () => {
-      inp.focus();
-      // Mission notes from localStorage
       const notes = localStorage.getItem('missionNotes');
       if (notes !== null) {
         document.getElementById('mission-notes').value = notes;
       }
     });
 
-    // Mission notes persistence
     document.getElementById('mission-notes').addEventListener('input', e => {
       localStorage.setItem('missionNotes', e.target.value);
     });
 
-    // 'L' hotkey to toggle logging (ignore if typing in an input)
     window.addEventListener('keydown', e => {
-      if (e.key === 'l' && !(e.target && e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+      const tag = e.target && e.target.tagName;
+      if (e.key === 'l' && tag !== 'INPUT' && tag !== 'TEXTAREA') {
         document.getElementById('logBtn').click();
       }
     });
 
-    // Warn before leaving if logging is active
     window.addEventListener('beforeunload', function (e) {
       if (!logging) return;
       e.preventDefault();
@@ -912,7 +875,7 @@ INDEX_HTML = """<!doctype html>
 </body>
 </html>"""
 
-# ———————— ROUTES ————————
+# ---------- ROUTES ----------
 
 @app.route("/")
 def index():
@@ -952,7 +915,6 @@ def run_command():
     global current_cwd
     cmd = request.json.get("cmd", "")
 
-    # Empty cmd: just return current cwd (for prompt init)
     if cmd is None or cmd.strip() == "":
         return jsonify(output="", error=False, cwd=current_cwd)
 
@@ -961,7 +923,6 @@ def run_command():
 
     stripped = cmd.strip()
 
-    # Handle "cd" commands to persist working directory
     if stripped.startswith("cd"):
         parts = stripped.split(None, 1)
         target = parts[1] if len(parts) > 1 else os.path.expanduser("~")
@@ -979,7 +940,6 @@ def run_command():
         "rm -rf", "mkfs", "dd if=", ":(){", "sudo rm",
         "shutdown", "halt", "mklabel"
     ]
-    # allow "reboot" explicitly if you want; everything else here is blocked
     if any(d in cmd.lower() for d in dangerous):
         if "reboot" not in cmd.lower():
             return jsonify(output="Blocked: dangerous command", error=True, cwd=current_cwd)
@@ -1022,6 +982,6 @@ def telemetry():
         current_log_handle.flush()
     return resp
 
-# ———————— START SERVER ————————
+# ---------- START SERVER ----------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
