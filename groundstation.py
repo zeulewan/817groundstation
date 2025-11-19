@@ -7,6 +7,7 @@ import busio
 import adafruit_bme680
 import os
 import shutil
+import math
 from datetime import datetime
 
 # ---------- BME680 SETUP ----------
@@ -23,37 +24,89 @@ current_log_handle = None
 current_cwd = os.path.expanduser("~")
 
 # ---------- REALISTIC BATTERY ----------
-def get_battery_percent():
+def parse_first_int(out):
+    m = re.search(r"(-?\d+)", out)
+    return int(m.group(1)) if m else None
+
+
+def lifepo4_get(param):
     try:
         out = subprocess.check_output(
-            ["lifepo4wered-cli", "get", "VBAT"], text=True
+            ["lifepo4wered-cli", "get", param], text=True
         ).strip()
-        m = re.search(r"(\d+)", out)
-        if not m:
-            return None, None
-        mv = int(m.group(1))
-        if mv >= 3400:
-            pct = 100
-        elif mv >= 3330:
-            pct = 75 + (mv - 3330) * 25 / 70
-        elif mv >= 3300:
-            pct = 50 + (mv - 3300) * 25 / 30
-        elif mv >= 3250:
-            pct = 20 + (mv - 3250) * 30 / 50
-        elif mv >= 3200:
-            pct = max(0, (mv - 3200) * 20 / 50)
-        else:
-            pct = 0
-        return int(pct), mv
-    except:
+        return parse_first_int(out)
+    except Exception:
+        return None
+
+
+def get_battery_percent():
+    mv = lifepo4_get("VBAT")
+    if mv is None:
         return None, None
 
+    if mv >= 3400:
+        pct = 100
+    elif mv >= 3330:
+        pct = 75 + (mv - 3330) * 25 / 70
+    elif mv >= 3300:
+        pct = 50 + (mv - 3300) * 25 / 30
+    elif mv >= 3250:
+        pct = 20 + (mv - 3250) * 30 / 50
+    elif mv >= 3200:
+        pct = max(0, (mv - 3200) * 20 / 50)
+    else:
+        pct = 0
+    return int(pct), mv
+
+
+def get_battery_extended():
+    """
+    Extra telemetry from LiFePO4wered-Pi(+):
+      - VIN  (input voltage, mV)
+      - VOUT (5V rail voltage, mV)
+      - IOUT (load current, mA)
+    """
+    vin_mv = lifepo4_get("VIN")
+    vout_mv = lifepo4_get("VOUT")
+    load_current_ma = lifepo4_get("IOUT")
+    return vin_mv, vout_mv, load_current_ma
+
+
+def compute_dew_point_c(temp_c, rh):
+    """
+    Magnus formula approximation for dew point.
+    temp_c: temperature in °C
+    rh: relative humidity in %
+    """
+    if rh is None or rh <= 0:
+        return None
+    a = 17.62
+    b = 243.12
+    gamma = math.log(rh / 100.0) + (a * temp_c) / (b + temp_c)
+    dew = (b * gamma) / (a - gamma)
+    return dew
+
+
 def get_bme_readings():
+    temperature_c = float(bme.temperature)
+    humidity = float(bme.humidity)
+    pressure_hpa = float(bme.pressure)
+    gas_ohms = float(bme.gas)
+
+    try:
+        altitude_m = float(bme.altitude)
+    except AttributeError:
+        altitude_m = None
+
+    dew_point_c = compute_dew_point_c(temperature_c, humidity)
+
     return {
-        "temperature_c": float(bme.temperature),
-        "humidity": float(bme.humidity),
-        "pressure_hpa": float(bme.pressure),
-        "gas_ohms": float(bme.gas),
+        "temperature_c": temperature_c,
+        "humidity": humidity,
+        "pressure_hpa": pressure_hpa,
+        "gas_ohms": gas_ohms,
+        "dew_point_c": dew_point_c,
+        "altitude_m": altitude_m,
     }
 
 # ---------- SYSTEM STATS (GROUND STATION) ----------
@@ -62,13 +115,13 @@ def get_system_stats():
     try:
         with open("/sys/class/thermal/thermal_zone0/temp") as f:
             cpu_temp_c = int(f.read().strip()) / 1000.0
-    except:
+    except Exception:
         pass
 
     load_1m = load_5m = load_15m = None
     try:
         load_1m, load_5m, load_15m = os.getloadavg()
-    except:
+    except Exception:
         pass
 
     mem_total_kb = None
@@ -80,7 +133,7 @@ def get_system_stats():
                     mem_total_kb = int(line.split()[1])
                 elif line.startswith("MemAvailable:"):
                     mem_avail_kb = int(line.split()[1])
-    except:
+    except Exception:
         pass
 
     mem_total_mb = mem_used_mb = None
@@ -93,7 +146,7 @@ def get_system_stats():
         total, used, free = shutil.disk_usage(LOG_DIR)
         disk_free_gb = free / (1024.0 ** 3)
         disk_used_pct = used * 100.0 / total
-    except:
+    except Exception:
         pass
 
     ip_address = None
@@ -101,20 +154,7 @@ def get_system_stats():
         ip_out = subprocess.check_output(["hostname", "-I"], text=True).strip()
         if ip_out:
             ip_address = ip_out.split()[0]
-    except:
-        pass
-
-    wifi_rssi_dbm = None
-    try:
-        iw = subprocess.check_output(
-            ["iwconfig", "wlan0"],
-            text=True,
-            stderr=subprocess.DEVNULL
-        )
-        m = re.search(r"Signal level=(-?\d+)\s*dBm", iw)
-        if m:
-            wifi_rssi_dbm = int(m.group(1))
-    except:
+    except Exception:
         pass
 
     return {
@@ -125,7 +165,6 @@ def get_system_stats():
         "disk_free_gb": disk_free_gb,
         "disk_used_pct": disk_used_pct,
         "ip_address": ip_address,
-        "wifi_rssi_dbm": wifi_rssi_dbm,
     }
 
 # ---------- FLASK APP ----------
@@ -137,306 +176,7 @@ INDEX_HTML = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NAPALM Ground Station – Fire Detection</title>
-  <style>
-    :root {
-      --bg:#111827;
-      --surface:#111827;
-      --panel:#111827;
-      --border:#374151;
-      --text:#e5e7eb;
-      --text-muted:#9ca3af;
-      --primary:#38bdf8;
-      --danger:#ef4444;
-      --warning:#f59e0b;
-      --green:#22c55e;
-    }
-
-    * {
-      margin:0;
-      padding:0;
-      box-sizing:border-box;
-    }
-
-    body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Mono", Menlo, monospace;
-      background:var(--bg);
-      color:var(--text);
-      height:100vh;
-      display:grid;
-      grid-template-rows:56px 1fr;
-    }
-
-    header {
-      background:#111827;
-      border-bottom:1px solid var(--border);
-      display:flex;
-      align-items:center;
-      padding:0 24px;
-      font-size:18px;
-      font-weight:500;
-      color:#f9fafb;
-    }
-
-    .main {
-      display:grid;
-      grid-template-columns:320px 2.1fr 400px;
-      height:calc(100vh - 56px);
-    }
-
-    iframe {
-      width:100%;
-      height:100%;
-      border:none;
-      background:#000;
-      outline:none;
-    }
-
-    /* LEFT COLUMN: CONTROLS */
-
-    .controls {
-      background:var(--surface);
-      border-right:1px solid var(--border);
-      padding:12px;
-      display:flex;
-      flex-direction:column;
-      gap:8px;
-      overflow-y:auto;
-    }
-
-    .card {
-      background:var(--panel);
-      border:1px solid var(--border);
-      padding:12px;
-      box-shadow:none;
-    }
-
-    .card-title {
-      font-size:11px;
-      text-transform:uppercase;
-      letter-spacing:1.5px;
-      color:var(--text-muted);
-      margin-bottom:6px;
-    }
-
-    .value {
-      font-size:24px;
-      font-weight:400;
-    }
-
-    .unit {
-      font-size:12px;
-      color:var(--text-muted);
-      margin-left:4px;
-    }
-
-    button#logBtn {
-      width:100%;
-      padding:10px;
-      font-size:13px;
-      font-weight:600;
-      border:none;
-      background:var(--primary);
-      color:white;
-      cursor:pointer;
-      text-align:center;
-    }
-
-    button#logBtn.recording {
-      background:var(--danger);
-      animation:pulse 2s infinite;
-    }
-
-    @keyframes pulse {
-      0%,100%{opacity:1}
-      50%{opacity:0.85}
-    }
-
-    .rec {
-      display:none;
-      align-items:center;
-      gap:6px;
-      color:var(--danger);
-      margin-top:4px;
-      font-size:11px;
-    }
-
-    .rec.active {
-      display:flex;
-    }
-
-    .dot {
-      width:8px;
-      height:8px;
-      background:var(--danger);
-      border-radius:0;
-      animation:blink 1.5s infinite;
-    }
-
-    @keyframes blink {
-      0%,100%{opacity:1}
-      50%{opacity:0.3}
-    }
-
-    .clocks {
-      display:flex;
-      justify-content:space-between;
-      padding:6px 8px;
-      background:#111827;
-      border:1px solid var(--border);
-      font-size:12px;
-    }
-
-    .sys-row {
-      font-size:12px;
-      color:var(--text-muted);
-      line-height:1.4;
-    }
-
-    .notes-textarea {
-      width:100%;
-      height:70px;
-      background:#111827;
-      border:1px solid var(--border);
-      color:var(--text);
-      font-size:12px;
-      padding:6px;
-      outline:none;
-      resize:none;
-    }
-
-    /* CENTER COLUMN: VIDEO + LIVE LOG */
-
-    .center-column {
-      display:flex;
-      flex-direction:column;
-      gap:8px;
-      padding:12px 12px 12px 0;
-      overflow:hidden;
-    }
-
-    .video-container {
-      flex:1.2;
-      min-height:0;
-      border:1px solid var(--border);
-      background:#000;
-    }
-
-    .log-card {
-      flex:1;
-      min-height:0;
-      display:flex;
-      flex-direction:column;
-    }
-
-    .log-container {
-      border:1px solid var(--border);
-      background:#111827;
-      margin-top:4px;
-      height:100%;
-      display:flex;
-      flex-direction:column;
-      font-size:11px;
-    }
-
-    .log-header {
-      padding:4px 6px;
-      border-bottom:1px solid var(--border);
-      color:var(--text-muted);
-    }
-
-    .log-body {
-      flex:1;
-      overflow-y:auto;
-    }
-
-    .log-table {
-      width:100%;
-      border-collapse:collapse;
-      font-family:'SF Mono', Menlo, monospace;
-      font-size:11px;
-    }
-
-    .log-table thead {
-      position:sticky;
-      top:0;
-      background:#111827;
-    }
-
-    .log-table th,
-    .log-table td {
-      padding:2px 4px;
-      border-bottom:1px solid #1f2933;
-      white-space:nowrap;
-    }
-
-    .log-table th {
-      text-align:left;
-      color:var(--text-muted);
-      font-weight:400;
-    }
-
-    .log-table tbody tr:nth-child(even) {
-      background:#101623;
-    }
-
-    /* RIGHT COLUMN: DATA */
-
-    .data-column {
-      border-left:1px solid var(--border);
-      padding:12px 12px 12px 0;
-      display:flex;
-      flex-direction:column;
-      gap:8px;
-      overflow-y:hidden;
-    }
-
-    .metric-card .value {
-      font-size:20px;
-    }
-
-    .battery-bar {
-      height:6px;
-      background:#111827;
-      border:1px solid var(--border);
-      margin-top:4px;
-    }
-
-    .battery-fill {
-      height:100%;
-      width:0%;
-      background:var(--primary);
-      transition:width 0.4s;
-    }
-
-    .status {
-      font-size:11px;
-      padding:6px;
-      border:1px solid var(--border);
-      background:#111827;
-      color:var(--text-muted);
-      text-align:left;
-    }
-
-    .compact-grid {
-      display:grid;
-      grid-template-columns:1fr 1fr;
-      gap:4px 8px;
-      font-size:12px;
-      color:var(--text-muted);
-    }
-
-    .compact-grid div span {
-      color:var(--text);
-      margin-left:2px;
-    }
-
-    canvas {
-      width:100%;
-      height:50px;
-      display:block;
-      background:#111827;
-    }
-  </style>
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header>NAPALM Ground Station – Fire Detection</header>
@@ -488,7 +228,6 @@ INDEX_HTML = """<!doctype html>
       <div class="card">
         <div class="card-title">Network</div>
         <div class="sys-row">IP: <span id="net-ip">--</span></div>
-        <div class="sys-row">RSSI: <span id="net-rssi">--</span></div>
       </div>
 
       <div class="card">
@@ -537,6 +276,9 @@ INDEX_HTML = """<!doctype html>
           <span id="battery">--</span><span class="unit">%</span>
         </div>
         <div id="battery_raw" style="font-size:11px;color:var(--text-muted);margin-top:2px;"></div>
+        <div id="battery_current" style="font-size:11px;color:var(--text-muted);margin-top:2px;"></div>
+        <div id="battery_vout" style="font-size:11px;color:var(--text-muted);margin-top:2px;"></div>
+        <div id="battery_vin" style="font-size:11px;color:var(--text-muted);margin-top:2px;"></div>
         <div class="battery-bar">
           <div class="battery-fill" id="battery_fill"></div>
         </div>
@@ -555,6 +297,8 @@ INDEX_HTML = """<!doctype html>
           <div>Humidity<span id="hum">--</span><span class="unit">%</span></div>
           <div>Pressure<span id="press">--</span><span class="unit">hPa</span></div>
           <div>Gas<span id="gas">--</span><span class="unit">Ω</span></div>
+          <div>Dew Pt<span id="dew">--</span><span class="unit">°C</span></div>
+          <div>Altitude<span id="alt">--</span><span class="unit">m</span></div>
         </div>
       </div>
 
@@ -746,13 +490,45 @@ INDEX_HTML = """<!doctype html>
         document.getElementById('press').textContent = d.pressure_hpa.toFixed(1);
         document.getElementById('gas').textContent   = Math.round(d.gas_ohms).toLocaleString();
 
+        if (d.dew_point_c != null) {
+          document.getElementById('dew').textContent = d.dew_point_c.toFixed(1);
+        } else {
+          document.getElementById('dew').textContent = '--';
+        }
+
+        if (d.altitude_m != null) {
+          document.getElementById('alt').textContent = d.altitude_m.toFixed(1);
+        } else {
+          document.getElementById('alt').textContent = '--';
+        }
+
         if (d.battery_percent !== null) {
           const pct  = d.battery_percent;
           const fill = document.getElementById('battery_fill');
           const val  = document.getElementById('battery');
 
           val.textContent = pct;
-          document.getElementById('battery_raw').textContent = d.battery_mv + ' mV';
+          document.getElementById('battery_raw').textContent =
+            (d.battery_mv != null ? d.battery_mv + ' mV' : '');
+
+          let currentLine = '';
+          if (d.load_current_ma != null) {
+            currentLine = d.load_current_ma + ' mA load';
+          }
+          document.getElementById('battery_current').textContent = currentLine;
+
+          let voutLine = '';
+          if (d.vout_mv != null) {
+            voutLine = 'Pi 5V rail: ' + d.vout_mv + ' mV';
+          }
+          document.getElementById('battery_vout').textContent = voutLine;
+
+          let vinLine = '';
+          if (d.vin_mv != null) {
+            vinLine = 'Input: ' + d.vin_mv + ' mV';
+          }
+          document.getElementById('battery_vin').textContent = vinLine;
+
           fill.style.width = pct + '%';
 
           let color = colorPrimary;
@@ -792,8 +568,6 @@ INDEX_HTML = """<!doctype html>
         }
 
         document.getElementById('net-ip').textContent = d.ip_address || '--';
-        document.getElementById('net-rssi').textContent =
-          (d.wifi_rssi_dbm != null) ? d.wifi_rssi_dbm + ' dBm' : '--';
 
         let status = 'Telemetry OK';
         if (d.battery_percent !== null && d.battery_percent <= 20) {
@@ -881,6 +655,7 @@ INDEX_HTML = """<!doctype html>
 def index():
     return INDEX_HTML
 
+
 @app.route("/api/start_log", methods=["POST"])
 def start_log():
     global current_log_file, current_log_handle
@@ -895,11 +670,13 @@ def start_log():
         current_log_handle.write(f"# note: {mission_note}\n")
     current_log_handle.write(
         "timestamp_iso,timestamp_unix,temperature_c,humidity,pressure_hpa,"
-        "gas_ohms,battery_percent,battery_mv\n"
+        "gas_ohms,battery_percent,battery_mv,dew_point_c,altitude_m,"
+        "input_voltage_mv,output_voltage_mv,load_current_ma\n"
     )
     current_log_handle.flush()
     print(f"Logging → {filepath}")
     return jsonify(success=True, logfile=filepath)
+
 
 @app.route("/api/stop_log", methods=["POST"])
 def stop_log():
@@ -909,6 +686,7 @@ def stop_log():
         current_log_handle = None
         print(f"Log saved → {current_log_file}")
     return jsonify(success=True)
+
 
 @app.route("/api/run_command", methods=["POST"])
 def run_command():
@@ -952,34 +730,59 @@ def run_command():
     except Exception as e:
         return jsonify(output=str(e), error=True, cwd=current_cwd)
 
+
 @app.route("/api/telemetry")
 def telemetry():
     bme_data = get_bme_readings()
     battery_pct, battery_mv = get_battery_percent()
+    vin_mv, vout_mv, load_current_ma = get_battery_extended()
     sys_stats = get_system_stats()
+    now_unix = time.time()
+
     resp = jsonify(
         temperature_c=bme_data["temperature_c"],
         humidity=bme_data["humidity"],
         pressure_hpa=bme_data["pressure_hpa"],
         gas_ohms=bme_data["gas_ohms"],
+        dew_point_c=bme_data["dew_point_c"],
+        altitude_m=bme_data["altitude_m"],
         battery_percent=battery_pct,
         battery_mv=battery_mv,
-        timestamp=time.time(),
+        vin_mv=vin_mv,
+        vout_mv=vout_mv,
+        load_current_ma=load_current_ma,
+        timestamp=now_unix,
         **sys_stats
     )
+
     if current_log_handle:
+        ts_iso = datetime.now().isoformat(timespec="seconds")
+
+        def fmt(v, fmt_str="{:.3f}"):
+            if v is None:
+                return ""
+            if isinstance(v, float):
+                return fmt_str.format(v)
+            return str(v)
+
         line = (
-            f"{datetime.now().isoformat(timespec='seconds')},"
-            f"{time.time():.3f},"
-            f"{bme_data['temperature_c']:.2f},"
-            f"{bme_data['humidity']:.1f},"
-            f"{bme_data['pressure_hpa']:.2f},"
-            f"{bme_data['gas_ohms']:.0f},"
-            f"{battery_pct or ''},"
-            f"{battery_mv or ''}\n"
+            f"{ts_iso},"
+            f"{fmt(now_unix)},"
+            f"{fmt(bme_data['temperature_c'], '{:.2f}')},"
+            f"{fmt(bme_data['humidity'], '{:.1f}')},"
+            f"{fmt(bme_data['pressure_hpa'], '{:.2f}')},"
+            f"{fmt(bme_data['gas_ohms'], '{:.0f}')},"
+            f"{'' if battery_pct is None else battery_pct},"
+            f"{'' if battery_mv is None else battery_mv},"
+            f"{'' if bme_data['dew_point_c'] is None else format(bme_data['dew_point_c'], '.2f')},"
+            f"{'' if bme_data['altitude_m'] is None else format(bme_data['altitude_m'], '.2f')},"
+            f"{'' if vin_mv is None else vin_mv},"
+            f"{'' if vout_mv is None else vout_mv},"
+            f"{'' if load_current_ma is None else load_current_ma}\n"
         )
         current_log_handle.write(line)
         current_log_handle.flush()
+
     return resp
 
 # ---------- START SERVER ----------
