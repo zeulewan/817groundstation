@@ -23,7 +23,12 @@ current_log_handle = None
 # ---------- SHELL CWD (for /api/run_command, if you still want it) ----------
 current_cwd = os.path.expanduser("~")
 
-# ---------- REALISTIC BATTERY ----------
+# ---------- BATTERY CONFIG / HELPERS ----------
+VBAT_MIN_DEFAULT = 2950  # mV, from lifepo4wered-cli get VBAT_MIN
+VBAT_MAX_DEFAULT = 3500  # mV, "full" voltage
+_vbat_min_cached = None
+
+
 def parse_first_int(out):
     m = re.search(r"(-?\d+)", out)
     return int(m.group(1)) if m else None
@@ -39,24 +44,42 @@ def lifepo4_get(param):
         return None
 
 
+def get_vbat_min():
+    """
+    Try to get VBAT_MIN from the LiFePO4wered-Pi config once and cache it.
+    Fallback to VBAT_MIN_DEFAULT if not available.
+    """
+    global _vbat_min_cached
+    if _vbat_min_cached is not None:
+        return _vbat_min_cached
+
+    vmin = lifepo4_get("VBAT_MIN")
+    if vmin is None:
+        vmin = VBAT_MIN_DEFAULT
+    _vbat_min_cached = vmin
+    return vmin
+
+
 def get_battery_percent():
+    """
+    Linear 0–100% mapping from VBAT_MIN to 3500 mV.
+    Below VBAT_MIN => 0%, above 3500 => 100%.
+    """
     mv = lifepo4_get("VBAT")
     if mv is None:
         return None, None
 
-    if mv >= 3400:
-        pct = 100
-    elif mv >= 3330:
-        pct = 75 + (mv - 3330) * 25 / 70
-    elif mv >= 3300:
-        pct = 50 + (mv - 3300) * 25 / 30
-    elif mv >= 3250:
-        pct = 20 + (mv - 3250) * 30 / 50
-    elif mv >= 3200:
-        pct = max(0, (mv - 3200) * 20 / 50)
-    else:
+    vmin = get_vbat_min()
+    vmax = VBAT_MAX_DEFAULT
+
+    if mv <= vmin:
         pct = 0
-    return int(pct), mv
+    elif mv >= vmax:
+        pct = 100
+    else:
+        pct = int(round((mv - vmin) * 100.0 / (vmax - vmin)))
+
+    return pct, mv
 
 
 def get_battery_extended():

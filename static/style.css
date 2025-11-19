@@ -41,6 +41,8 @@ header {
   display:grid;
   grid-template-columns:320px 2.1fr 400px;
   height:calc(100vh - 56px);
+  column-gap:16px;           /* <-- add space between the three main columns */
+  padding:8px 12px 12px;     /* <-- small inner padding so outer lines don't kiss the edge */
 }
 
 iframe {
@@ -56,10 +58,10 @@ iframe {
 .controls {
   background:var(--surface);
   border-right:1px solid var(--border);
-  padding:12px;
+  padding:8px 8px 8px 0;
   display:flex;
   flex-direction:column;
-  gap:8px;
+  gap:12px;                  /* was 8px */
   overflow-y:auto;
 }
 
@@ -70,12 +72,16 @@ iframe {
   box-shadow:none;
 }
 
+.card + .card {
+  margin-top:2px;            /* tiny extra space so borders don't visually merge */
+}
+
 .card-title {
   font-size:11px;
   text-transform:uppercase;
   letter-spacing:1.5px;
   color:var(--text-muted);
-  margin-bottom:6px;
+  margin-bottom:8px;         /* a bit more space below titles */
 }
 
 .value {
@@ -116,7 +122,7 @@ button#logBtn.recording {
   align-items:center;
   gap:6px;
   color:var(--danger);
-  margin-top:4px;
+  margin-top:6px;
   font-size:11px;
 }
 
@@ -140,7 +146,7 @@ button#logBtn.recording {
 .clocks {
   display:flex;
   justify-content:space-between;
-  padding:6px 8px;
+  padding:8px 10px;
   background:#111827;
   border:1px solid var(--border);
   font-size:12px;
@@ -149,7 +155,8 @@ button#logBtn.recording {
 .sys-row {
   font-size:12px;
   color:var(--text-muted);
-  line-height:1.4;
+  line-height:1.5;           /* slightly taller to stop text touching borders */
+  margin-bottom:2px;
 }
 
 .notes-textarea {
@@ -169,8 +176,8 @@ button#logBtn.recording {
 .center-column {
   display:flex;
   flex-direction:column;
-  gap:8px;
-  padding:12px 12px 12px 0;
+  gap:12px;                  /* was 8px */
+  padding:8px 0 8px 0;
   overflow:hidden;
 }
 
@@ -191,7 +198,7 @@ button#logBtn.recording {
 .log-container {
   border:1px solid var(--border);
   background:#111827;
-  margin-top:4px;
+  margin-top:8px;            /* was 4px */
   height:100%;
   display:flex;
   flex-direction:column;
@@ -199,7 +206,7 @@ button#logBtn.recording {
 }
 
 .log-header {
-  padding:4px 6px;
+  padding:6px 8px;
   border-bottom:1px solid var(--border);
   color:var(--text-muted);
 }
@@ -224,7 +231,7 @@ button#logBtn.recording {
 
 .log-table th,
 .log-table td {
-  padding:2px 4px;
+  padding:3px 6px;
   border-bottom:1px solid #1f2933;
   white-space:nowrap;
 }
@@ -243,10 +250,10 @@ button#logBtn.recording {
 
 .data-column {
   border-left:1px solid var(--border);
-  padding:12px 12px 12px 0;
+  padding:8px 0 8px 0;
   display:flex;
   flex-direction:column;
-  gap:8px;
+  gap:12px;                  /* was 8px */
   overflow-y:hidden;
 }
 
@@ -258,7 +265,7 @@ button#logBtn.recording {
   height:6px;
   background:#111827;
   border:1px solid var(--border);
-  margin-top:4px;
+  margin-top:6px;            /* a little more above the bar */
 }
 
 .battery-fill {
@@ -270,7 +277,7 @@ button#logBtn.recording {
 
 .status {
   font-size:11px;
-  padding:6px;
+  padding:8px;
   border:1px solid var(--border);
   background:#111827;
   color:var(--text-muted);
@@ -280,14 +287,19 @@ button#logBtn.recording {
 .compact-grid {
   display:grid;
   grid-template-columns:1fr 1fr;
-  gap:4px 8px;
+  column-gap:16px;           /* more horizontal space */
+  row-gap:6px;               /* more vertical space between env rows */
   font-size:12px;
   color:var(--text-muted);
 }
 
+.compact-grid div {
+  line-height:1.5;
+}
+
 .compact-grid div span {
   color:var(--text);
-  margin-left:2px;
+  margin-left:4px;
 }
 
 canvas {
@@ -295,4 +307,5 @@ canvas {
   height:50px;
   display:block;
   background:#111827;
+  margin-top:4px;            /* space between number and sparkline */
 }
